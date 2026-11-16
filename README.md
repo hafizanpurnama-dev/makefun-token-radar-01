@@ -1,5 +1,13 @@
 # Token Launch Radar — Solana
 
+
+[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/hafizanpurnama-dev/makefun-token-radar-01/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/hafizanpurnama-dev/makefun-token-radar-01/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+
+🏆 Entry for [make.fun bounty: Build the best token launch radar](https://make.fun/bounty/token-radar-01)
+
+
 Real-time radar for new SPL token launches on Solana. Detects mint creation on
 both the original Token Program and Token 2022 Program, fetches on-chain
 metadata, and outputs structured radar data.
