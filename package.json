@@ -1,0 +1,25 @@
+{
+  "name": "makefun-token-radar-01",
+  "version": "1.0.0",
+  "description": "Solana token launch radar – detects and tracks new token launches in real-time",
+  "type": "module",
+  "main": "main.ts",
+  "scripts": {
+    "start": "npx tsx main.ts",
+    "dev": "npx tsx watch main.ts"
+  },
+  "dependencies": {
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.2",
+    "commander": "^13.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.20.1",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}
