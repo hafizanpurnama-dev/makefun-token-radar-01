@@ -8,11 +8,19 @@
 //
 // Implied value follows only from the snapshot's own figures:
 //
-//   base       = tvl_usd x BASE_MULTIPLE
-//   growth     = clamp(change_7d, -60, 120) per cent
-//   growthMult = 1 + (growth / 100) x GROWTH_WEIGHT
-//   maturity   = 0.6 + min(age_days, 1095) / 1095 x 0.4   (age_days unknown: 365)
-//   implied    = max(1, round(base x growthMult x maturity))
+//   base       = tvl_usd × BASE_MULTIPLE
+//   tvlMult    = protocols below TVL_RELEVANCE_FLOOR get sqrt(tvl / floor) penalty,
+//                so tiny protocols don't outrank large ones on growth alone
+//   growth     = clamp(change_7d, GROWTH_FLOOR, GROWTH_CAP) per cent
+//   growthMult = positive: 1 + sqrt(growth/cap)×(cap/100)×WEIGHT_UP  (diminishing returns)
+//                negative: 1 + (growth/100)×WEIGHT_DOWN                (losses hurt harder)
+//                clamped at GROWTH_MULT_FLOOR
+//   maturity   = bell curve: rises from MATURITY_FLOOR to 1.0 at MATURITY_PEAK_DAYS,
+//                then decays to MATURITY_DECAY_FLOOR over MATURITY_DECAY_DAYS
+//                plus FRESHNESS_BONUS for protocols listed within FRESHNESS_DAYS
+//   chainMult  = 1 + min(chains-1, CHAIN_MAX) × CHAIN_BONUS
+//   catWeight  = category multiplier from CATEGORY_WEIGHTS (default 1.0)
+//   implied    = max(1, round(base × tvlMult × growthMult × maturity × chainMult × catWeight))
 //
 // The constants are the house model's, stated in the dashboard and changeable in the model sandbox. No
 // protocol name is ever special-cased: the same function scores every row.
@@ -43,28 +51,72 @@ export interface Snapshot {
 /** The model's constants, as the dashboard states them and the sandbox may change them. */
 export interface ModelConstants {
   base_multiple: number;
-  growth_weight: number;
+  growth_weight_up: number;
+  growth_weight_down: number;
   growth_floor: number;
   growth_cap: number;
+  growth_mult_floor: number;
+  /** Maturity floor: the minimum multiplier for an unlisted or very young protocol. */
   maturity_floor: number;
-  maturity_range: number;
-  maturity_days: number;
+  /** Maturity peak: days at which a protocol's maturity multiplier reaches 1.0. */
+  maturity_peak_days: number;
+  /** Maturity decay: days beyond the peak after which the multiplier reaches decay_floor. */
+  maturity_decay_days: number;
+  /** Maturity decay floor: the multiplier for protocols well past their peak without a token. */
+  maturity_decay_floor: number;
   unknown_age_days: number;
+  /** Freshness window in days: protocols listed within this window get a bonus. */
+  freshness_days: number;
+  /** Freshness bonus: added to the maturity multiplier for very fresh protocols. */
+  freshness_bonus: number;
+  /** TVL relevance floor: protocols below this TVL get a square-root-based penalty. */
+  tvl_relevance_floor: number;
+  /** Per-chain bonus: each additional chain beyond the first adds this fraction (capped at max_chains). */
+  chain_bonus: number;
+  /** Maximum number of chains that count toward the diversity bonus. */
+  chain_max: number;
+  /** Category weight multipliers: a protocol's base value is scaled by its category's weight. */
+  category_weights: Record<string, number>;
 }
 
 export const MODEL: ModelConstants = {
   base_multiple: 0.25,
-  growth_weight: 0.5,
+  growth_weight_up: 0.40,
+  growth_weight_down: 0.75,
   growth_floor: -60,
   growth_cap: 120,
-  maturity_floor: 0.6,
-  maturity_range: 0.4,
-  maturity_days: 1095,
+  growth_mult_floor: 0.40,
+  maturity_floor: 0.55,
+  maturity_peak_days: 365,
+  maturity_decay_days: 1460,
+  maturity_decay_floor: 0.50,
   unknown_age_days: 365,
+  freshness_days: 90,
+  freshness_bonus: 0.10,
+  tvl_relevance_floor: 10_000,
+  chain_bonus: 0.08,
+  chain_max: 5,
+  category_weights: {
+    'Lending': 1.15,
+    'CDP': 1.15,
+    'Leveraged Farming': 1.10,
+    'Yield': 1.10,
+    'Yield Aggregator': 1.05,
+    'Dexes': 1.00,
+    'Derivatives': 1.00,
+    'Bridge': 0.90,
+    'Staking': 0.90,
+    'Restaking': 0.95,
+    'Services': 0.85,
+    'Prediction Market': 0.85,
+    'Stablecoin': 0.80,
+    'RWA': 1.10,
+    'Insurance': 0.75,
+  },
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-1';
+export const MODEL_VERSION = 'radar-2';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 160;
@@ -177,11 +229,50 @@ export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: Mo
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
-  const growthMult = 1 + (growthPct / 100) * model.growth_weight;
+  // Asymmetric growth: losses penalised harder than gains rewarded, with
+  // diminishing returns on extreme positive growth via sqrt damping.
+  let growthMult: number;
+  if (growthPct >= 0) {
+    // Dampened positive: sqrt(growthPct / cap) * cap/100 * weight_up
+    const dampened = Math.sqrt(growthPct / model.growth_cap) * (model.growth_cap / 100);
+    growthMult = 1 + dampened * model.growth_weight_up;
+  } else {
+    // Asymmetric negative: losses hurt ~1.88× more than equivalent gains help.
+    growthMult = 1 + (growthPct / 100) * model.growth_weight_down;
+  }
+  growthMult = Math.max(growthMult, model.growth_mult_floor);
   const ageForModel = age ?? model.unknown_age_days;
-  const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+  // Bell-curve maturity: rises from maturity_floor to 1.0 at maturity_peak_days,
+  // then decays to maturity_decay_floor over maturity_decay_days. Protocols that
+  // have been around too long without a token are penalised.
+  let maturityMult: number;
+  if (ageForModel <= model.maturity_peak_days) {
+    // Ascending phase: floor → 1.0
+    const t = ageForModel / model.maturity_peak_days;
+    maturityMult = model.maturity_floor + (1.0 - model.maturity_floor) * t;
+  } else {
+    // Decaying phase: 1.0 → decay_floor
+    const excess = ageForModel - model.maturity_peak_days;
+    const t = Math.min(excess / model.maturity_decay_days, 1.0);
+    maturityMult = 1.0 - (1.0 - model.maturity_decay_floor) * t;
+  }
+  // Freshness bonus for very recently listed protocols.
+  if (age !== null && age >= 0 && age <= model.freshness_days) {
+    maturityMult = Math.min(maturityMult + model.freshness_bonus, 1.1);
+  }
+  // TVL relevance: tiny protocols get a square-root penalty so they don't
+  // outrank large ones on growth alone.
+  let tvlMult = 1.0;
+  if (protocol.tvl_usd < model.tvl_relevance_floor) {
+    tvlMult = Math.sqrt(protocol.tvl_usd / model.tvl_relevance_floor);
+  }
+  // Chain diversity: each additional chain beyond the first earns chain_bonus, capped.
+  const extraChains = Math.min(Math.max(protocol.chains.length - 1, 0), model.chain_max);
+  const chainMult = 1 + extraChains * model.chain_bonus;
+  // Category weight: lookup by exact name, fall back to 1.0 for unknown categories.
+  const catWeight = model.category_weights[protocol.category ?? ''] ?? 1.0;
   const base = protocol.tvl_usd * model.base_multiple;
-  const implied = Math.max(1, Math.round(base * growthMult * maturityMult));
+  const implied = Math.max(1, Math.round(base * growthMult * maturityMult * tvlMult * chainMult * catWeight));
   return { implied, growthPct, growthMult, maturityMult, age };
 }
 
